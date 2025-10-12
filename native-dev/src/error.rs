@@ -1,3 +1,5 @@
+use core::error;
+
 use solana_program::program_error::ProgramError;
 use thiserror::Error;
 
@@ -11,6 +13,8 @@ pub enum ReviewError {
     InvalidDataLength,
     #[error("Rating greater than 5 or less than 1")]
     InvalidRating,
+    #[error("Incorrect Account Error")]
+    IncorrectAccountError,
 }
 
 // 实现了 From<ReviewError> for ProgramError 后，

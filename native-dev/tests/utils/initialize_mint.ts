@@ -43,11 +43,8 @@ export async function initializeMint(url: string, programId: PublicKey) {
         const explorerLink = getExplorerLink("transaction", txSig);
         console.log(`tx sig: ${explorerLink}`);
     } catch (err) {
-        if (err instanceof Error) {
-            throw new Error(`Failed to initialize mint: ${err.message}`);
-        } else {
-            throw new Error("Unknown error");
-        }
+        console.error("Failed to initialize mint:", err);
+        throw err;
     }
 }
 

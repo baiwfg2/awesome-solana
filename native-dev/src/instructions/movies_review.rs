@@ -3,6 +3,7 @@ use solana_program::{
     borsh1::try_from_slice_unchecked,
     entrypoint::ProgramResult,
     msg,
+    native_token::LAMPORTS_PER_SOL,
     program::invoke_signed,
     program_error::ProgramError,
     pubkey::Pubkey,
@@ -78,7 +79,11 @@ fn add_movie_review(
     let accounts_iter = &mut accounts.iter();
     let payer = next_account_info(accounts_iter)?;
     let pda_account = next_account_info(accounts_iter)?;
+    let _ = next_account_info(accounts_iter)?;
+    let _ = next_account_info(accounts_iter)?;
+    let _ = next_account_info(accounts_iter)?;
     let system_program = next_account_info(accounts_iter)?;
+    let _ = next_account_info(accounts_iter)?;
 
     if !payer.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
@@ -132,6 +137,7 @@ fn add_movie_review(
     account_data.serialize(&mut data.as_mut())?;
 
     init_review_counter(accounts, pda_account.key, program_id)?;
+    mint_token(0, accounts, 10 * LAMPORTS_PER_SOL, program_id)?;
     Ok(())
 }
 
@@ -197,7 +203,11 @@ fn add_comment(program_id: &Pubkey, accounts: &[AccountInfo], comment: String) -
     let pda_review = next_account_info(account_info_iter)?;
     let pda_counter = next_account_info(account_info_iter)?;
     let pda_comment = next_account_info(account_info_iter)?;
+    let _ = next_account_info(account_info_iter)?;
+    let _ = next_account_info(account_info_iter)?;
+    let _ = next_account_info(account_info_iter)?;
     let system_program = next_account_info(account_info_iter)?;
+    let _ = next_account_info(account_info_iter)?;
 
     let mut counter_data =
         try_from_slice_unchecked::<MovieCommentCounter>(&pda_counter.data.borrow()).unwrap();
@@ -245,6 +255,68 @@ fn add_comment(program_id: &Pubkey, accounts: &[AccountInfo], comment: String) -
 
     counter_data.counter += 1;
     counter_data.serialize(&mut &mut pda_counter.data.borrow_mut()[..])?;
+
+    mint_token(2, accounts, 5 * LAMPORTS_PER_SOL, program_id)?;
+    Ok(())
+}
+
+fn mint_token(inst_type: u8, accounts: &[AccountInfo],
+    token_amount: u64, program_id: &Pubkey) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let payer = next_account_info(account_info_iter)?;
+    let _ = next_account_info(account_info_iter)?;
+    let _ = next_account_info(account_info_iter)?;
+    // hard-coded for the moment
+    if inst_type == 2 {
+        // no use in this function
+        let pda_comment = next_account_info(account_info_iter)?;
+    }
+    let token_mint = next_account_info(account_info_iter)?;
+    let mint_auth = next_account_info(account_info_iter)?;
+    let user_ata = next_account_info(account_info_iter)?;
+    let token_program = next_account_info(account_info_iter)?;
+    let system_program = next_account_info(account_info_iter)?;
+
+    let (mint_pda, _mint_bump) = Pubkey::find_program_address(&[b"token_mint"], program_id);
+    let (mint_auth_pda, mint_auth_bump) =
+        Pubkey::find_program_address(&[b"token_auth"], program_id);
+    if *token_mint.key != mint_pda {
+        return Err(ReviewError::IncorrectAccountError.into());
+    }
+    if *mint_auth.key != mint_auth_pda {
+        return Err(ReviewError::InvalidPDA.into());
+    }
+
+    let expected_ata = get_associated_token_address(payer.key, token_mint.key);
+    msg!("Expected ATA: {}, Provided ATA: {}", expected_ata, user_ata.key);
+
+    if *user_ata.key != expected_ata {
+        return Err(ReviewError::IncorrectAccountError.into());
+    }
+
+    // 检查 ATA 账户是否存在且已初始化
+    if user_ata.data_is_empty() {
+        msg!("ATA account is empty, it needs to be created first");
+        return Err(ReviewError::IncorrectAccountError.into());
+    }
+
+    if *token_program.key != TOKEN_PROGRAM_ID {
+        return Err(ReviewError::IncorrectAccountError.into());
+    }
+    invoke_signed(
+        &spl_token::instruction::mint_to(
+            token_program.key,
+            token_mint.key,
+            user_ata.key,
+            mint_auth.key,
+            &[],
+            token_amount,
+        )?,
+        &[token_mint.clone(), user_ata.clone(), mint_auth.clone()],
+        // The Token program requires the mint_auth account to sign for this transaction
+        &[&[b"token_auth", &[mint_auth_bump]]],
+    )?;
+    Ok(())
 }
 
 fn initialize_token_mint(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {

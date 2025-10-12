@@ -9,12 +9,23 @@ import {
     sendAndConfirmTransaction,
 } from '@solana/web3.js';
 
+import {
+    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    getAssociatedTokenAddressSync,
+    createAssociatedTokenAccountInstruction,
+    getAccount,
+} from "@solana/spl-token";
+
+import { initializeMint } from './utils/initialize_mint';
+
 import { struct, u8, str, publicKey, u64 } from '@coral-xyz/borsh';
 import * as fs from 'fs';
 import * as os from 'os';
 import { expect } from 'chai';
 import chaiAsPromised from 'chai-as-promised';
 import chai from 'chai';
+import { send } from 'process';
 
 chai.use(chaiAsPromised);
 
@@ -82,10 +93,32 @@ describe('movie review program', () => {
     const payer = Keypair.fromSecretKey(
         Uint8Array.from(JSON.parse(fs.readFileSync(os.homedir() + '/.config/solana/id.json', 'utf8')))
     );
-    const user1 = Keypair.generate();
+    // 固定地址，避免每次需重新创建 ATA
+    let user1: Keypair = Keypair.fromSecretKey(
+        Uint8Array.from(JSON.parse(fs.readFileSync('./tests/utils/user1.json', 'utf8')))
+    );
+    //let user1 = Keypair.generate();
+    const [token_mint] = PublicKey.findProgramAddressSync(
+        [Buffer.from("token_mint")], programId);
+    const [token_auth] = PublicKey.findProgramAddressSync(
+        [Buffer.from("token_auth")], programId);
+    const payer_ata = getAssociatedTokenAddressSync(
+        token_mint!,
+        payer.publicKey,
+        // 这两个是默认
+        // false,
+        // TOKEN_PROGRAM_ID
+    );
+    const user1_ata = getAssociatedTokenAddressSync(
+        token_mint!,
+        user1.publicKey,
+    );
 
-    before(async () => {
+    before(async function () {
+        this.timeout(30000);
         await connection.requestAirdrop(user1.publicKey, LAMPORTS_PER_SOL * 1);
+        // 为何挺耗时 ? 不如在执行用例前，手工执行 initialize_mint.ts
+        //await initializeMint('http://localhost:8899', programId);
     });
 
     beforeEach(() => {
@@ -94,7 +127,8 @@ describe('movie review program', () => {
     });
 
     async function sendTx(variant: number, title: string, rating: number, description: string,
-        pda: PublicKey, pda_counter?: PublicKey, pda_comment?: PublicKey, commenter?: Keypair) {
+        pda: PublicKey, pda_counter?: PublicKey, pda_comment?: PublicKey, commenter_ata?: PublicKey,
+        commenter?: Keypair) {
         if (variant != 2) {
             ixLayout.encode(
                 {
@@ -128,6 +162,12 @@ describe('movie review program', () => {
                     { pubkey: payer.publicKey, isSigner: true, isWritable: false },
                     { pubkey: pda, isSigner: false, isWritable: true },
                     { pubkey: pda_counter, isSigner: false, isWritable: true },
+                    //  if false, then report: Cross-program invocation with unauthorized signer or writable account
+                    { pubkey: token_mint, isSigner: false, isWritable: true },
+                    { pubkey: token_auth, isSigner: false, isWritable: false },
+                    // ata should accept token from token_auth PDA with write permission
+                    { pubkey: payer_ata, isSigner: false, isWritable: true },
+                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
                 ],
             });
@@ -141,6 +181,7 @@ describe('movie review program', () => {
                 ],
             });
         } else if (variant === 2) {
+            // add comment
             inst = new TransactionInstruction({
                 programId: programId,
                 data: encodedBuffer,
@@ -149,6 +190,10 @@ describe('movie review program', () => {
                     { pubkey: pda, isSigner: false, isWritable: true },
                     { pubkey: pda_counter, isSigner: false, isWritable: true },
                     { pubkey: pda_comment, isSigner: false, isWritable: true },
+                    { pubkey: token_mint, isSigner: false, isWritable: true },
+                    { pubkey: token_auth, isSigner: false, isWritable: false },
+                    { pubkey: commenter_ata, isSigner: false, isWritable: true },
+                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
                 ],
             });
@@ -158,6 +203,45 @@ describe('movie review program', () => {
         return sendAndConfirmTransaction(connection, tx, [commenter || payer]);
     }
 
+    // If execute more than once, report:  Error processing Instruction 0: Provided owner is not allowed
+    it('create ata account', async () => {
+        const payerAtaInfo = await connection.getAccountInfo(payer_ata);
+        const user1AtaInfo = await connection.getAccountInfo(user1_ata);
+        
+        const instructions = [];
+        if (!payerAtaInfo) {
+            console.log('Creating payer ATA...');
+            instructions.push(
+                createAssociatedTokenAccountInstruction(
+                    payer.publicKey, // who pays the rent ?
+                    payer_ata,
+                    payer.publicKey,
+                    token_mint!,
+                    TOKEN_PROGRAM_ID
+                )
+            );
+        }
+
+        if (!user1AtaInfo) {
+            console.log('Creating user1 ATA...');
+            instructions.push(
+                createAssociatedTokenAccountInstruction(
+                    payer.publicKey, // if use user1, report: Error: Signature verification failed
+                    user1_ata,
+                    user1.publicKey,
+                    token_mint!,
+                    TOKEN_PROGRAM_ID
+                )
+            );
+        }
+
+        if (instructions.length > 0) {
+            const tx = new Transaction().add(...instructions);
+            const txSig = await sendAndConfirmTransaction(connection, tx, [payer]);
+            console.log(`token program createAta txSig: ${txSig}`);
+        }
+    });
+
     it('add movie review', async () => {
         const title = `Add-${Math.floor(Math.random() * 10000)}`;
         const [pda] = PublicKey.findProgramAddressSync(
@@ -165,9 +249,8 @@ describe('movie review program', () => {
             programId
         );
         const [pda_counter] = PublicKey.findProgramAddressSync(
-            [pda.toBuffer(), Buffer.from("comment")],
-            programId
-        );
+            [pda.toBuffer(), Buffer.from("comment")], programId);
+
         await sendTx(0, title, 5, "This is the first movie of Rambo series", pda, pda_counter);
 
         const accountInfo = await connection.getAccountInfo(pda);
@@ -179,6 +262,14 @@ describe('movie review program', () => {
         expect(accountData.isInitialized).to.equal(1);
         expect(accountData.rating).to.equal(5);
         expect(accountData.title).to.equal(title);
+        // 检验 ATA 账户的代币余额
+        try {
+            const payerAtaAccount = await getAccount(connection, payer_ata, 'confirmed', TOKEN_PROGRAM_ID);
+            console.log(`Payer ATA balance: ${payerAtaAccount.amount.toString()} tokens`);
+            expect(Number(payerAtaAccount.amount)).to.be.greaterThanOrEqual(10 * LAMPORTS_PER_SOL);
+        } catch (error) {
+            throw error;
+        }
     });
 
     it("update movie review", async () => {
@@ -321,6 +412,7 @@ describe('movie review program', () => {
             [pda.toBuffer(), Buffer.from("comment")],
             programId
         );
+
         const getPdaComment = async () => {
             const counterInfo = await connection.getAccountInfo(pda_counter);
             const counterData = counterLayout.decode(counterInfo.data);
@@ -329,10 +421,14 @@ describe('movie review program', () => {
                 programId
             )[0];
         };
+        console.log(`payer ata: ${payer_ata.toBase58()}, user1 ata: ${user1_ata.toBase58()}`);
+
         await sendTx(0, title, 5, "This is the first movie of Die Hard series", pda, pda_counter);
-        await sendTx(2, '', -1, 'This is a comment 1', pda,pda_counter, await getPdaComment(), payer);
+        await sendTx(2, '', -1, 'This is a comment 1',
+            pda, pda_counter, await getPdaComment(), payer_ata, payer);
         const comment2 = await getPdaComment();
-        await sendTx(2, '', -1, 'This is a comment 2', pda, pda_counter, comment2, user1);
+        await sendTx(2, '', -1, 'This is a comment 2',
+            pda, pda_counter, comment2, user1_ata, user1);
 
         const accountInfo = await connection.getAccountInfo(comment2);
         const accountData = commentLayout.decode(accountInfo.data);
@@ -340,5 +436,13 @@ describe('movie review program', () => {
         expect(accountData.discriminator).to.equal(COMMENT_DISCRIMINATOR);
         expect(accountData.commenter.toString()).to.equal(user1.publicKey.toString());
         expect(accountData.comment).to.equal('This is a comment 2');
+
+        try {
+            const user1AtaAccount = await getAccount(connection, user1_ata, 'confirmed', TOKEN_PROGRAM_ID);
+            console.log(`User1 ATA balance: ${user1AtaAccount.amount.toString()} tokens`);
+            expect(Number(user1AtaAccount.amount)).to.be.greaterThanOrEqual(5 * LAMPORTS_PER_SOL);
+        } catch (error) {
+            throw error;
+        }
     });
 });
