@@ -1,6 +1,6 @@
-# solana demos
+# awesome solana
 
-This repo is for solana enthusiasts that can utilize programs under different folders to improve solana skills. I will continue uploading my examples that I learnt. See subfolder README to learn commands.
+I mean literally, solana is awesome ! As a prior distributed/database engineer, I can't wait to explore the beauty of Solana. A good tangent move is to learn by doing(programming) on the platform. This repo is for solana enthusiasts that can utilize programs under different folders to improve solana skills. I will continue uploading my discoveries that I learnt. See subfolder README to learn commands.
 
 ## Access mainnet account cloned by surfpool
 
